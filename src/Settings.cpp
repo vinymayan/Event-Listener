@@ -32,10 +32,6 @@ namespace
 
 	void EnsureMenuListsPopulated()
 	{
-		auto* manager = ListManager::GetSingleton();
-		if (!manager->_isPopulated) {
-			manager->PopulateAllLists();
-		}
 	}
 
 	[[nodiscard]] const char* GetLoc(const std::string& a_key, const char* a_default)
@@ -888,10 +884,7 @@ namespace
 
 		if (ImGui::Button(GetLoc("debug.reload_data", "Reload Data"))) {
 			if (manager) {
-				logger::debug("[DebugMenu] Reload Data clicked: forcing PopulateAllLists after dynamic form update.");
-				logger::debug("[DebugMenu] PopulateAllLists BEGIN reason=manual_reload_data");
-				manager->PopulateAllLists(true);
-				logger::debug("[DebugMenu] PopulateAllLists END reason=manual_reload_data");
+				logger::debug("[DebugMenu] Reload Data clicked; list population is handled by DataLoaded/DFG callbacks.");
 			} else {
 				logger::debug("[DebugMenu] Reload Data clicked but manager is null.");
 			}
