@@ -26,7 +26,7 @@ namespace {
 
             std::string_view eventName = a_event->eventName.c_str();
             if (eventName == "DynamicFormsGeneratorLoaded") {
-                ListManager::GetSingleton()->PopulateAllLists();
+                ListManager::GetSingleton()->PopulateAllLists(true);
                 return RE::BSEventNotifyControl::kContinue;
             }
             if (eventName == "DynamicFormsGeneratorUpdated") {

@@ -38,6 +38,38 @@ namespace Settings
 		kActorValue
 	};
 
+	enum class RuleTarget : std::uint8_t
+	{
+		kEventActor,
+		kPlayer,
+		kCombatTarget
+	};
+
+	enum class CooldownScope : std::uint8_t
+	{
+		kGlobal,
+		kPerActor
+	};
+
+	enum class ConditionType : std::uint8_t
+	{
+		kRace,
+		kKeyword,
+		kFaction,
+		kEquippedWeapon,
+		kActorValue
+	};
+
+	enum class ComparisonOperator : std::uint8_t
+	{
+		kGreater,
+		kGreaterOrEqual,
+		kLess,
+		kLessOrEqual,
+		kEqual,
+		kBetween
+	};
+
 	struct RuleEffect
 	{
 		EffectType type{ EffectType::kCastSpell };
@@ -52,13 +84,39 @@ namespace Settings
 		bool requireSpellCost{ false };
 	};
 
+	struct RuleCondition
+	{
+		ConditionType type{ ConditionType::kRace };
+		RE::FormID formID{ 0 };
+		bool negate{ false };
+		std::string actorValue{ "Stamina" };
+		ComparisonOperator comparison{ ComparisonOperator::kGreaterOrEqual };
+		float value{ 0.0F };
+		float maximumValue{ 0.0F };
+	};
+
 	struct Rule
 	{
 		bool enabled{ true };
 		std::string name{ "New Rule" };
-		std::string eventName{ "AttackStart" };
+		std::string eventName;
 		bool affectPlayer{ false };
 		RE::FormID requiredPerk{ 0 };
+		RuleTarget target{ RuleTarget::kEventActor };
+		float chance{ 100.0F };
+		ValueSource chanceSource{ ValueSource::kFixed };
+		RE::FormID chanceGlobal{ 0 };
+		std::string chanceActorValue{ "Block" };
+		float cooldownSeconds{ 0.0F };
+		ValueSource cooldownSource{ ValueSource::kFixed };
+		RE::FormID cooldownGlobal{ 0 };
+		std::string cooldownActorValue{ "Block" };
+		CooldownScope cooldownScope{ CooldownScope::kPerActor };
+		std::uint32_t maxActivations{ 0 };
+		ValueSource maxActivationsSource{ ValueSource::kFixed };
+		RE::FormID maxActivationsGlobal{ 0 };
+		std::string maxActivationsActorValue{ "Block" };
+		std::vector<RuleCondition> conditions;
 		std::vector<RuleEffect> effects;
 		std::string sourceFileName;
 	};

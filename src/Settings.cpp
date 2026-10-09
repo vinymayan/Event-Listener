@@ -1,6 +1,7 @@
 ﻿#include "Settings.h"
 
 #include "ListManager.h"
+#include "RuleExecutionState.h"
 #include "logger.h"
 
 #include "SKSEMCP/SKSEMenuFramework.hpp"
@@ -12,13 +13,20 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
+#include <mutex>
 #include <optional>
+#include <random>
 #include <sstream>
+#include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace ImGui = ImGuiMCP;
 
@@ -29,6 +37,9 @@ namespace
 	constexpr const char* kLanguagePath = "Data/Viny Mods/Event Listener/Language.json";
 
 	std::unordered_map<std::string, std::string> g_langMap;
+
+	std::mutex g_runtimeMutex;
+	std::unordered_map<std::string, Settings::RuleRuntimeState> g_ruleRuntime;
 
 	void EnsureMenuListsPopulated()
 	{
@@ -82,8 +93,45 @@ namespace
 		ensureString("menu.enabled", "Enabled");
 		ensureString("menu.rule_name", "Rule Name");
 		ensureString("menu.event_name", "Event");
+		ensureString("menu.search_rule_name", "Search Rule Name");
+		ensureString("menu.search_event", "Search Event");
 		ensureString("menu.affect_player", "Can Affect Player");
 		ensureString("menu.required_perk", "Required Perk");
+		ensureString("menu.rule_target", "Target");
+		ensureString("menu.target_event_actor", "Event Actor");
+		ensureString("menu.target_player", "Player");
+		ensureString("menu.target_combat_target", "Combat Target");
+		ensureString("menu.execution", "Execution");
+		ensureString("menu.chance", "Chance (%)");
+		ensureString("menu.cooldown", "Cooldown (seconds)");
+		ensureString("menu.cooldown_scope", "Cooldown Scope");
+		ensureString("menu.cooldown_global", "Global");
+		ensureString("menu.cooldown_per_actor", "Per Actor");
+		ensureString("menu.max_activations_per_day", "Maximum Activations per Day (0 = unlimited)");
+		ensureString("menu.conditions", "Conditions");
+		ensureString("menu.add_condition", "Add Condition");
+		ensureString("menu.condition_type", "Condition");
+		ensureString("menu.condition_race", "Race");
+		ensureString("menu.condition_keyword", "Keyword");
+		ensureString("menu.condition_faction", "Faction");
+		ensureString("menu.condition_equipped_weapon", "Equipped Weapon");
+		ensureString("menu.condition_actor_value", "Actor Value");
+		ensureString("menu.invert_condition", "Invert Condition");
+		ensureString("menu.race", "Race");
+		ensureString("menu.keyword", "Keyword");
+		ensureString("menu.faction", "Faction");
+		ensureString("menu.weapon", "Weapon");
+		ensureString("menu.comparison", "Comparison");
+		ensureString("menu.comparison_greater", "Greater Than");
+		ensureString("menu.comparison_greater_equal", "Greater Than or Equal");
+		ensureString("menu.comparison_less", "Less Than");
+		ensureString("menu.comparison_less_equal", "Less Than or Equal");
+		ensureString("menu.comparison_equal", "Equal");
+		ensureString("menu.comparison_between", "Between");
+		ensureString("menu.comparison_value", "Value");
+		ensureString("menu.minimum_value", "Minimum Value");
+		ensureString("menu.maximum_value", "Maximum Value");
+		ensureString("menu.invalid_actor_value", "Invalid Actor Value name");
 		ensureString("menu.effects", "Effects");
 		ensureString("menu.add_effect", "Add Effect");
 		ensureString("menu.delete_rule", "Delete Rule");
@@ -242,6 +290,91 @@ namespace
 		return Settings::ValueSource::kFixed;
 	}
 
+	[[nodiscard]] const char* RuleTargetName(Settings::RuleTarget a_target)
+	{
+		switch (a_target) {
+		case Settings::RuleTarget::kPlayer:
+			return "Player";
+		case Settings::RuleTarget::kCombatTarget:
+			return "CombatTarget";
+		case Settings::RuleTarget::kEventActor:
+		default:
+			return "EventActor";
+		}
+	}
+
+	[[nodiscard]] Settings::RuleTarget RuleTargetFromName(std::string_view a_name)
+	{
+		if (a_name == "Player") return Settings::RuleTarget::kPlayer;
+		if (a_name == "CombatTarget") return Settings::RuleTarget::kCombatTarget;
+		return Settings::RuleTarget::kEventActor;
+	}
+
+	[[nodiscard]] const char* CooldownScopeName(Settings::CooldownScope a_scope)
+	{
+		return a_scope == Settings::CooldownScope::kGlobal ? "Global" : "PerActor";
+	}
+
+	[[nodiscard]] Settings::CooldownScope CooldownScopeFromName(std::string_view a_name)
+	{
+		return a_name == "Global" ? Settings::CooldownScope::kGlobal : Settings::CooldownScope::kPerActor;
+	}
+
+	[[nodiscard]] const char* ConditionTypeName(Settings::ConditionType a_type)
+	{
+		switch (a_type) {
+		case Settings::ConditionType::kKeyword:
+			return "Keyword";
+		case Settings::ConditionType::kFaction:
+			return "Faction";
+		case Settings::ConditionType::kEquippedWeapon:
+			return "EquippedWeapon";
+		case Settings::ConditionType::kActorValue:
+			return "ActorValue";
+		case Settings::ConditionType::kRace:
+		default:
+			return "Race";
+		}
+	}
+
+	[[nodiscard]] Settings::ConditionType ConditionTypeFromName(std::string_view a_name)
+	{
+		if (a_name == "Keyword") return Settings::ConditionType::kKeyword;
+		if (a_name == "Faction") return Settings::ConditionType::kFaction;
+		if (a_name == "EquippedWeapon") return Settings::ConditionType::kEquippedWeapon;
+		if (a_name == "ActorValue") return Settings::ConditionType::kActorValue;
+		return Settings::ConditionType::kRace;
+	}
+
+	[[nodiscard]] const char* ComparisonOperatorName(Settings::ComparisonOperator a_comparison)
+	{
+		switch (a_comparison) {
+		case Settings::ComparisonOperator::kGreater:
+			return "Greater";
+		case Settings::ComparisonOperator::kLess:
+			return "Less";
+		case Settings::ComparisonOperator::kLessOrEqual:
+			return "LessOrEqual";
+		case Settings::ComparisonOperator::kEqual:
+			return "Equal";
+		case Settings::ComparisonOperator::kBetween:
+			return "Between";
+		case Settings::ComparisonOperator::kGreaterOrEqual:
+		default:
+			return "GreaterOrEqual";
+		}
+	}
+
+	[[nodiscard]] Settings::ComparisonOperator ComparisonOperatorFromName(std::string_view a_name)
+	{
+		if (a_name == "Greater") return Settings::ComparisonOperator::kGreater;
+		if (a_name == "Less") return Settings::ComparisonOperator::kLess;
+		if (a_name == "LessOrEqual") return Settings::ComparisonOperator::kLessOrEqual;
+		if (a_name == "Equal") return Settings::ComparisonOperator::kEqual;
+		if (a_name == "Between") return Settings::ComparisonOperator::kBetween;
+		return Settings::ComparisonOperator::kGreaterOrEqual;
+	}
+
 	[[nodiscard]] RE::ActorValue ResourceToActorValue(Settings::ResourceType a_resource)
 	{
 		switch (a_resource) {
@@ -357,6 +490,35 @@ namespace
 		a_parent.AddMember(rapidjson::Value(a_name, a_allocator).Move(), value, a_allocator);
 	}
 
+	void ReadExecutionValueSource(const rapidjson::Value& a_parent, const char* a_prefix,
+		Settings::ValueSource& a_source, RE::FormID& a_global, std::string& a_actorValue)
+	{
+		const auto sourceKey = std::string(a_prefix) + "Source";
+		const auto globalKey = std::string(a_prefix) + "Global";
+		const auto actorValueKey = std::string(a_prefix) + "ActorValue";
+		if (a_parent.HasMember(sourceKey.c_str()) && a_parent[sourceKey.c_str()].IsString()) {
+			a_source = ValueSourceFromName(a_parent[sourceKey.c_str()].GetString());
+		}
+		a_global = ReadFormID(a_parent, globalKey.c_str());
+		if (a_parent.HasMember(actorValueKey.c_str()) && a_parent[actorValueKey.c_str()].IsString()) {
+			a_actorValue = a_parent[actorValueKey.c_str()].GetString();
+		}
+	}
+
+	void WriteExecutionValueSource(rapidjson::Value& a_parent,
+		rapidjson::Document::AllocatorType& a_allocator, const char* a_prefix,
+		Settings::ValueSource a_source, RE::FormID a_global, const std::string& a_actorValue)
+	{
+		const auto sourceKey = std::string(a_prefix) + "Source";
+		const auto globalKey = std::string(a_prefix) + "Global";
+		const auto actorValueKey = std::string(a_prefix) + "ActorValue";
+		a_parent.AddMember(rapidjson::Value(sourceKey.c_str(), a_allocator).Move(),
+			rapidjson::Value(ValueSourceName(a_source), a_allocator).Move(), a_allocator);
+		WriteFormID(a_parent, a_allocator, globalKey.c_str(), a_global);
+		a_parent.AddMember(rapidjson::Value(actorValueKey.c_str(), a_allocator).Move(),
+			rapidjson::Value(a_actorValue.c_str(), a_allocator).Move(), a_allocator);
+	}
+
 	void LoadLanguage()
 	{
 		g_langMap.clear();
@@ -392,6 +554,51 @@ namespace
 				g_langMap[it->name.GetString()] = it->value.GetString();
 			}
 		}
+	}
+
+	[[nodiscard]] Settings::RuleCondition ReadCondition(const rapidjson::Value& a_value)
+	{
+		Settings::RuleCondition condition;
+		if (!a_value.IsObject()) {
+			return condition;
+		}
+
+		if (a_value.HasMember("type") && a_value["type"].IsString()) {
+			condition.type = ConditionTypeFromName(a_value["type"].GetString());
+		}
+		condition.formID = ReadFormID(a_value, "form");
+		if (a_value.HasMember("negate") && a_value["negate"].IsBool()) {
+			condition.negate = a_value["negate"].GetBool();
+		}
+		if (a_value.HasMember("actorValue") && a_value["actorValue"].IsString()) {
+			condition.actorValue = a_value["actorValue"].GetString();
+		}
+		if (a_value.HasMember("comparison") && a_value["comparison"].IsString()) {
+			condition.comparison = ComparisonOperatorFromName(a_value["comparison"].GetString());
+		}
+		if (a_value.HasMember("value") && a_value["value"].IsNumber()) {
+			condition.value = a_value["value"].GetFloat();
+		}
+		if (a_value.HasMember("maximumValue") && a_value["maximumValue"].IsNumber()) {
+			condition.maximumValue = a_value["maximumValue"].GetFloat();
+		}
+		return condition;
+	}
+
+	void WriteCondition(
+		rapidjson::Value& a_array,
+		rapidjson::Document::AllocatorType& a_allocator,
+		const Settings::RuleCondition& a_condition)
+	{
+		rapidjson::Value value(rapidjson::kObjectType);
+		value.AddMember("type", rapidjson::Value(ConditionTypeName(a_condition.type), a_allocator).Move(), a_allocator);
+		WriteFormID(value, a_allocator, "form", a_condition.formID);
+		value.AddMember("negate", a_condition.negate, a_allocator);
+		value.AddMember("actorValue", rapidjson::Value(a_condition.actorValue.c_str(), a_allocator).Move(), a_allocator);
+		value.AddMember("comparison", rapidjson::Value(ComparisonOperatorName(a_condition.comparison), a_allocator).Move(), a_allocator);
+		value.AddMember("value", a_condition.value, a_allocator);
+		value.AddMember("maximumValue", a_condition.maximumValue, a_allocator);
+		a_array.PushBack(value, a_allocator);
 	}
 
 	[[nodiscard]] Settings::RuleEffect ReadEffect(const rapidjson::Value& a_value)
@@ -485,6 +692,30 @@ namespace
 			rule.affectPlayer = doc["affectPlayer"].GetBool();
 		}
 		rule.requiredPerk = ReadFormID(doc, "requiredPerk");
+		if (doc.HasMember("target") && doc["target"].IsString()) {
+			rule.target = RuleTargetFromName(doc["target"].GetString());
+		}
+		if (doc.HasMember("chance") && doc["chance"].IsNumber()) {
+			rule.chance = std::clamp(doc["chance"].GetFloat(), 0.0F, 100.0F);
+		}
+		if (doc.HasMember("cooldownSeconds") && doc["cooldownSeconds"].IsNumber()) {
+			rule.cooldownSeconds = std::max(0.0F, doc["cooldownSeconds"].GetFloat());
+		}
+		if (doc.HasMember("cooldownScope") && doc["cooldownScope"].IsString()) {
+			rule.cooldownScope = CooldownScopeFromName(doc["cooldownScope"].GetString());
+		}
+		if (doc.HasMember("maxActivations") && doc["maxActivations"].IsUint()) {
+			rule.maxActivations = doc["maxActivations"].GetUint();
+		}
+		ReadExecutionValueSource(doc, "chance", rule.chanceSource, rule.chanceGlobal, rule.chanceActorValue);
+		ReadExecutionValueSource(doc, "cooldown", rule.cooldownSource, rule.cooldownGlobal, rule.cooldownActorValue);
+		ReadExecutionValueSource(doc, "maxActivations", rule.maxActivationsSource, rule.maxActivationsGlobal, rule.maxActivationsActorValue);
+
+		if (doc.HasMember("conditions") && doc["conditions"].IsArray()) {
+			for (const auto& condition : doc["conditions"].GetArray()) {
+				rule.conditions.push_back(ReadCondition(condition));
+			}
+		}
 
 		if (doc.HasMember("effects") && doc["effects"].IsArray()) {
 			for (const auto& effect : doc["effects"].GetArray()) {
@@ -516,6 +747,20 @@ namespace
 		doc.AddMember("eventName", rapidjson::Value(a_rule.eventName.c_str(), allocator).Move(), allocator);
 		doc.AddMember("affectPlayer", a_rule.affectPlayer, allocator);
 		WriteFormID(doc, allocator, "requiredPerk", a_rule.requiredPerk);
+		doc.AddMember("target", rapidjson::Value(RuleTargetName(a_rule.target), allocator).Move(), allocator);
+		doc.AddMember("chance", a_rule.chance, allocator);
+		doc.AddMember("cooldownSeconds", a_rule.cooldownSeconds, allocator);
+		doc.AddMember("cooldownScope", rapidjson::Value(CooldownScopeName(a_rule.cooldownScope), allocator).Move(), allocator);
+		doc.AddMember("maxActivations", a_rule.maxActivations, allocator);
+		WriteExecutionValueSource(doc, allocator, "chance", a_rule.chanceSource, a_rule.chanceGlobal, a_rule.chanceActorValue);
+		WriteExecutionValueSource(doc, allocator, "cooldown", a_rule.cooldownSource, a_rule.cooldownGlobal, a_rule.cooldownActorValue);
+		WriteExecutionValueSource(doc, allocator, "maxActivations", a_rule.maxActivationsSource, a_rule.maxActivationsGlobal, a_rule.maxActivationsActorValue);
+
+		rapidjson::Value conditions(rapidjson::kArrayType);
+		for (const auto& condition : a_rule.conditions) {
+			WriteCondition(conditions, allocator, condition);
+		}
+		doc.AddMember("conditions", conditions, allocator);
 
 		rapidjson::Value effects(rapidjson::kArrayType);
 		for (const auto& effect : a_rule.effects) {
@@ -587,6 +832,36 @@ namespace
 		a_value = std::clamp(a_value, a_min, a_max);
 		ImGui::PopID();
 		return changed;
+	}
+
+	[[nodiscard]] bool DrawIntSliderWithInput(
+		const char* a_label,
+		std::uint32_t& a_value,
+		int a_min,
+		int a_max)
+	{
+		auto value = static_cast<int>(std::min<std::uint32_t>(a_value, static_cast<std::uint32_t>(a_max)));
+		bool changed = false;
+		ImGui::PushID(a_label);
+		ImGui::SetNextItemWidth(180.0F);
+		if (ImGui::SliderInt("##slider", &value, a_min, a_max)) {
+			changed = true;
+		}
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(180.0F);
+		if (ImGui::InputInt(a_label, &value)) {
+			changed = true;
+		}
+		value = std::clamp(value, a_min, a_max);
+		a_value = static_cast<std::uint32_t>(value);
+		ImGui::PopID();
+		return changed;
+	}
+
+	[[nodiscard]] bool DrawFloatInput(const char* a_label, float& a_value)
+	{
+		ImGui::SetNextItemWidth(240.0F);
+		return ImGui::InputFloat(a_label, &a_value, 0.0F, 0.0F, "%.2f");
 	}
 
 	bool DrawDropdown(const char* a_label, const std::string& a_category, RE::FormID& a_currentFormID, float a_customWidth = 560.0F)
@@ -666,6 +941,200 @@ namespace
 		return changed;
 	}
 
+	[[nodiscard]] const char* RuleTargetLabel(Settings::RuleTarget a_target)
+	{
+		switch (a_target) {
+		case Settings::RuleTarget::kPlayer:
+			return GetLoc("menu.target_player", "Player");
+		case Settings::RuleTarget::kCombatTarget:
+			return GetLoc("menu.target_combat_target", "Combat Target");
+		case Settings::RuleTarget::kEventActor:
+		default:
+			return GetLoc("menu.target_event_actor", "Event Actor");
+		}
+	}
+
+	bool DrawRuleTargetDropdown(Settings::Rule& a_rule)
+	{
+		constexpr std::array targets = {
+			Settings::RuleTarget::kEventActor,
+			Settings::RuleTarget::kPlayer,
+			Settings::RuleTarget::kCombatTarget
+		};
+
+		bool changed = false;
+		if (ImGui::BeginCombo(GetLoc("menu.rule_target", "Target"), RuleTargetLabel(a_rule.target))) {
+			for (const auto target : targets) {
+				const bool selected = a_rule.target == target;
+				if (ImGui::Selectable(RuleTargetLabel(target), selected)) {
+					a_rule.target = target;
+					changed = true;
+				}
+				if (selected) {
+					ImGui::SetItemDefaultFocus();
+				}
+			}
+			ImGui::EndCombo();
+		}
+		return changed;
+	}
+
+	[[nodiscard]] const char* CooldownScopeLabel(Settings::CooldownScope a_scope)
+	{
+		return a_scope == Settings::CooldownScope::kGlobal ?
+			GetLoc("menu.cooldown_global", "Global") :
+			GetLoc("menu.cooldown_per_actor", "Per Actor");
+	}
+
+	bool DrawCooldownScopeDropdown(Settings::Rule& a_rule)
+	{
+		bool changed = false;
+		if (ImGui::BeginCombo(GetLoc("menu.cooldown_scope", "Cooldown Scope"), CooldownScopeLabel(a_rule.cooldownScope))) {
+			for (const auto scope : { Settings::CooldownScope::kGlobal, Settings::CooldownScope::kPerActor }) {
+				const bool selected = a_rule.cooldownScope == scope;
+				if (ImGui::Selectable(CooldownScopeLabel(scope), selected)) {
+					a_rule.cooldownScope = scope;
+					changed = true;
+				}
+				if (selected) {
+					ImGui::SetItemDefaultFocus();
+				}
+			}
+			ImGui::EndCombo();
+		}
+		return changed;
+	}
+
+	[[nodiscard]] const char* ConditionTypeLabel(Settings::ConditionType a_type)
+	{
+		switch (a_type) {
+		case Settings::ConditionType::kKeyword:
+			return GetLoc("menu.condition_keyword", "Keyword");
+		case Settings::ConditionType::kFaction:
+			return GetLoc("menu.condition_faction", "Faction");
+		case Settings::ConditionType::kEquippedWeapon:
+			return GetLoc("menu.condition_equipped_weapon", "Equipped Weapon");
+		case Settings::ConditionType::kActorValue:
+			return GetLoc("menu.condition_actor_value", "Actor Value");
+		case Settings::ConditionType::kRace:
+		default:
+			return GetLoc("menu.condition_race", "Race");
+		}
+	}
+
+	bool DrawConditionTypeDropdown(Settings::RuleCondition& a_condition)
+	{
+		constexpr std::array types = {
+			Settings::ConditionType::kRace,
+			Settings::ConditionType::kKeyword,
+			Settings::ConditionType::kFaction,
+			Settings::ConditionType::kEquippedWeapon,
+			Settings::ConditionType::kActorValue
+		};
+
+		bool changed = false;
+		if (ImGui::BeginCombo(GetLoc("menu.condition_type", "Condition"), ConditionTypeLabel(a_condition.type))) {
+			for (const auto type : types) {
+				const bool selected = a_condition.type == type;
+				if (ImGui::Selectable(ConditionTypeLabel(type), selected)) {
+					a_condition.type = type;
+					changed = true;
+				}
+				if (selected) {
+					ImGui::SetItemDefaultFocus();
+				}
+			}
+			ImGui::EndCombo();
+		}
+		return changed;
+	}
+
+	[[nodiscard]] const char* ComparisonOperatorLabel(Settings::ComparisonOperator a_comparison)
+	{
+		switch (a_comparison) {
+		case Settings::ComparisonOperator::kGreater:
+			return GetLoc("menu.comparison_greater", "Greater Than");
+		case Settings::ComparisonOperator::kLess:
+			return GetLoc("menu.comparison_less", "Less Than");
+		case Settings::ComparisonOperator::kLessOrEqual:
+			return GetLoc("menu.comparison_less_equal", "Less Than or Equal");
+		case Settings::ComparisonOperator::kEqual:
+			return GetLoc("menu.comparison_equal", "Equal");
+		case Settings::ComparisonOperator::kBetween:
+			return GetLoc("menu.comparison_between", "Between");
+		case Settings::ComparisonOperator::kGreaterOrEqual:
+		default:
+			return GetLoc("menu.comparison_greater_equal", "Greater Than or Equal");
+		}
+	}
+
+	bool DrawComparisonDropdown(Settings::RuleCondition& a_condition)
+	{
+		constexpr std::array comparisons = {
+			Settings::ComparisonOperator::kGreater,
+			Settings::ComparisonOperator::kGreaterOrEqual,
+			Settings::ComparisonOperator::kLess,
+			Settings::ComparisonOperator::kLessOrEqual,
+			Settings::ComparisonOperator::kEqual,
+			Settings::ComparisonOperator::kBetween
+		};
+
+		bool changed = false;
+		if (ImGui::BeginCombo(GetLoc("menu.comparison", "Comparison"), ComparisonOperatorLabel(a_condition.comparison))) {
+			for (const auto comparison : comparisons) {
+				const bool selected = a_condition.comparison == comparison;
+				if (ImGui::Selectable(ComparisonOperatorLabel(comparison), selected)) {
+					a_condition.comparison = comparison;
+					changed = true;
+				}
+				if (selected) {
+					ImGui::SetItemDefaultFocus();
+				}
+			}
+			ImGui::EndCombo();
+		}
+		return changed;
+	}
+
+	bool DrawCondition(Settings::RuleCondition& a_condition)
+	{
+		bool changed = DrawConditionTypeDropdown(a_condition);
+		switch (a_condition.type) {
+		case Settings::ConditionType::kRace:
+			changed |= DrawDropdown(GetLoc("menu.race", "Race"), "Race", a_condition.formID);
+			changed |= ImGui::Checkbox(GetLoc("menu.invert_condition", "Invert Condition"), &a_condition.negate);
+			break;
+		case Settings::ConditionType::kKeyword:
+			changed |= DrawDropdown(GetLoc("menu.keyword", "Keyword"), "Keyword", a_condition.formID);
+			changed |= ImGui::Checkbox(GetLoc("menu.invert_condition", "Invert Condition"), &a_condition.negate);
+			break;
+		case Settings::ConditionType::kFaction:
+			changed |= DrawDropdown(GetLoc("menu.faction", "Faction"), "Faction", a_condition.formID);
+			changed |= ImGui::Checkbox(GetLoc("menu.invert_condition", "Invert Condition"), &a_condition.negate);
+			break;
+		case Settings::ConditionType::kEquippedWeapon:
+			changed |= DrawDropdown(GetLoc("menu.weapon", "Weapon"), "Weapon", a_condition.formID);
+			changed |= ImGui::Checkbox(GetLoc("menu.invert_condition", "Invert Condition"), &a_condition.negate);
+			break;
+		case Settings::ConditionType::kActorValue:
+			changed |= DrawStringInput(GetLoc("menu.actor_value", "Actor Value"), a_condition.actorValue, 64);
+			changed |= DrawComparisonDropdown(a_condition);
+			if (a_condition.comparison == Settings::ComparisonOperator::kBetween) {
+				changed |= DrawFloatInput(GetLoc("menu.minimum_value", "Minimum Value"), a_condition.value);
+				changed |= DrawFloatInput(GetLoc("menu.maximum_value", "Maximum Value"), a_condition.maximumValue);
+			} else {
+				changed |= DrawFloatInput(GetLoc("menu.comparison_value", "Value"), a_condition.value);
+			}
+			if (RE::ActorValueList::LookupActorValueByName(a_condition.actorValue.c_str()) == RE::ActorValue::kNone) {
+				ImGui::TextColored({ 1.0F, 0.35F, 0.35F, 1.0F }, "%s", GetLoc("menu.invalid_actor_value", "Invalid Actor Value name"));
+			}
+			break;
+		default:
+			break;
+		}
+		return changed;
+	}
+
 	bool DrawEffectTypeDropdown(Settings::RuleEffect& a_effect)
 	{
 		constexpr std::array types = {
@@ -739,14 +1208,14 @@ namespace
 		return changed;
 	}
 
-	bool DrawValueSourceDropdown(Settings::RuleEffect& a_effect)
+	bool DrawValueSourceDropdown(Settings::ValueSource& a_valueSource)
 	{
 		bool changed = false;
-		if (ImGui::BeginCombo(GetLoc("menu.value_source", "Value Source"), ValueSourceName(a_effect.valueSource))) {
+		if (ImGui::BeginCombo(GetLoc("menu.value_source", "Value Source"), ValueSourceName(a_valueSource))) {
 			for (const auto source : { Settings::ValueSource::kFixed, Settings::ValueSource::kGlobal, Settings::ValueSource::kActorValue }) {
-				const bool selected = a_effect.valueSource == source;
+				const bool selected = a_valueSource == source;
 				if (ImGui::Selectable(ValueSourceName(source), selected)) {
-					a_effect.valueSource = source;
+					a_valueSource = source;
 					changed = true;
 				}
 				if (selected) {
@@ -755,6 +1224,31 @@ namespace
 			}
 			ImGui::EndCombo();
 		}
+		return changed;
+	}
+
+	template <typename T>
+	bool DrawExecutionValue(const char* a_label, T& a_fixedValue, T a_maximum,
+		Settings::ValueSource& a_source, RE::FormID& a_global, std::string& a_actorValue)
+	{
+		ImGui::PushID(a_label);
+		bool changed = DrawValueSourceDropdown(a_source);
+		ImGui::BeginDisabled(a_source != Settings::ValueSource::kFixed);
+		if constexpr (std::is_integral_v<T>) {
+			changed |= DrawIntSliderWithInput(a_label, a_fixedValue, 0, static_cast<int>(a_maximum));
+		} else {
+			changed |= DrawFloatSliderWithInput(a_label, a_fixedValue, 0.0F, a_maximum);
+		}
+		ImGui::EndDisabled();
+		if (a_source == Settings::ValueSource::kGlobal) {
+			changed |= DrawDropdown(GetLoc("menu.global", "Global"), "Global", a_global);
+		} else if (a_source == Settings::ValueSource::kActorValue) {
+			changed |= DrawStringInput(GetLoc("menu.actor_value", "Actor Value"), a_actorValue, 64);
+			if (RE::ActorValueList::LookupActorValueByName(a_actorValue.c_str()) == RE::ActorValue::kNone) {
+				ImGui::TextColored({ 1.0F, 0.35F, 0.35F, 1.0F }, "%s", GetLoc("menu.invalid_actor_value", "Invalid Actor Value name"));
+			}
+		}
+		ImGui::PopID();
 		return changed;
 	}
 
@@ -785,7 +1279,7 @@ namespace
 		case Settings::EffectType::kModifyResource:
 			changed |= DrawOperationDropdown(a_effect);
 			changed |= DrawResourceDropdown(a_effect);
-			changed |= DrawValueSourceDropdown(a_effect);
+			changed |= DrawValueSourceDropdown(a_effect.valueSource);
 			if (a_effect.valueSource == Settings::ValueSource::kFixed) {
 				changed |= DrawFloatSliderWithInput(GetLoc("menu.fixed_value", "Fixed Value"), a_effect.fixedValue, 0.0F, 10000.0F);
 			} else if (a_effect.valueSource == Settings::ValueSource::kGlobal) {
@@ -806,6 +1300,12 @@ namespace
 		std::unique_lock lock(Settings::RuleMutex);
 		bool changed = false;
 		EnsureMenuListsPopulated();
+		static std::string ruleNameSearch;
+		static std::string eventSearch;
+		(void)DrawStringInput(GetLoc("menu.search_rule_name", "Search Rule Name"), ruleNameSearch);
+		(void)DrawStringInput(GetLoc("menu.search_event", "Search Event"), eventSearch);
+		const auto nameFilter = ToLower(ruleNameSearch);
+		const auto eventFilter = ToLower(eventSearch);
 		if (ImGui::Button(GetLoc("menu.add_rule", "Add Rule"))) {
 			Settings::Rule rule;
 			rule.name = MakeUniqueRuleName(rule.name, Settings::Rules.size());
@@ -817,6 +1317,11 @@ namespace
 
 		for (std::size_t i = 0; i < Settings::Rules.size();) {
 			auto& rule = Settings::Rules[i];
+			if (ToLower(rule.name).find(nameFilter) == std::string::npos ||
+				ToLower(rule.eventName).find(eventFilter) == std::string::npos) {
+				++i;
+				continue;
+			}
 			ImGui::PushID(static_cast<int>(i));
 			const std::string header = rule.name + "##rule_" + std::to_string(i);
 			if (ImGui::CollapsingHeader(header.c_str())) {
@@ -826,6 +1331,45 @@ namespace
 				changed |= DrawStringInput(GetLoc("menu.event_name", "Event"), rule.eventName, 128);
 				changed |= ImGui::Checkbox(GetLoc("menu.affect_player", "Can Affect Player"), &rule.affectPlayer);
 				changed |= DrawDropdown(GetLoc("menu.required_perk", "Required Perk"), "Perk", rule.requiredPerk);
+				changed |= DrawRuleTargetDropdown(rule);
+
+				ImGui::Spacing();
+				ImGui::TextColored({ 0.6F, 0.8F, 1.0F, 1.0F }, "%s", GetLoc("menu.execution", "Execution"));
+				changed |= DrawExecutionValue(GetLoc("menu.chance", "Chance (%)"), rule.chance, 100.0F,
+					rule.chanceSource, rule.chanceGlobal, rule.chanceActorValue);
+				changed |= DrawExecutionValue(GetLoc("menu.cooldown", "Cooldown (seconds)"), rule.cooldownSeconds, 3600.0F,
+					rule.cooldownSource, rule.cooldownGlobal, rule.cooldownActorValue);
+				if (rule.cooldownSource != Settings::ValueSource::kFixed || rule.cooldownSeconds > 0.0F) {
+					changed |= DrawCooldownScopeDropdown(rule);
+				}
+				changed |= DrawExecutionValue(GetLoc("menu.max_activations_per_day", "Maximum Activations per Day (0 = unlimited)"), rule.maxActivations, std::uint32_t{ 1000000 },
+					rule.maxActivationsSource, rule.maxActivationsGlobal, rule.maxActivationsActorValue);
+
+				ImGui::Spacing();
+				ImGui::TextColored({ 0.6F, 0.8F, 1.0F, 1.0F }, "%s", GetLoc("menu.conditions", "Conditions"));
+				if (ImGui::Button(GetLoc("menu.add_condition", "Add Condition"))) {
+					rule.conditions.push_back({});
+					changed = true;
+				}
+
+				for (std::size_t conditionIndex = 0; conditionIndex < rule.conditions.size();) {
+					ImGui::PushID(static_cast<int>(conditionIndex));
+					const std::string conditionHeader = std::string(ConditionTypeLabel(rule.conditions[conditionIndex].type)) +
+						"##condition_" + std::to_string(conditionIndex);
+					if (ImGui::TreeNode(conditionHeader.c_str())) {
+						changed |= DrawCondition(rule.conditions[conditionIndex]);
+						if (ImGui::Button(GetLoc("common.remove", "Remove"))) {
+							rule.conditions.erase(rule.conditions.begin() + static_cast<std::ptrdiff_t>(conditionIndex));
+							changed = true;
+							ImGui::TreePop();
+							ImGui::PopID();
+							continue;
+						}
+						ImGui::TreePop();
+					}
+					ImGui::PopID();
+					++conditionIndex;
+				}
 
 				ImGui::Spacing();
 				ImGui::TextColored({ 0.6F, 0.8F, 1.0F, 1.0F }, "%s", GetLoc("menu.effects", "Effects"));
@@ -884,7 +1428,8 @@ namespace
 
 		if (ImGui::Button(GetLoc("debug.reload_data", "Reload Data"))) {
 			if (manager) {
-				logger::debug("[DebugMenu] Reload Data clicked; list population is handled by DataLoaded/DFG callbacks.");
+				const bool reloaded = manager->PopulateAllLists(true);
+				logger::debug("[DebugMenu] Reload Data clicked; refresh result: {}.", reloaded);
 			} else {
 				logger::debug("[DebugMenu] Reload Data clicked but manager is null.");
 			}
@@ -913,6 +1458,26 @@ namespace
 		default:
 			return std::max(0.0F, a_effect.fixedValue);
 		}
+	}
+
+	[[nodiscard]] float ResolveExecutionValue(float a_fixedValue, Settings::ValueSource a_source,
+		RE::FormID a_global, const std::string& a_actorValue, RE::Actor* a_actor)
+	{
+		float value = a_fixedValue;
+		if (a_source == Settings::ValueSource::kGlobal) {
+			if (const auto* global = RE::TESForm::LookupByID<RE::TESGlobal>(a_global)) {
+				value = global->value;
+			}
+		} else if (a_source == Settings::ValueSource::kActorValue && a_actor) {
+			const auto actorValue = RE::ActorValueList::LookupActorValueByName(a_actorValue.c_str());
+			if (const auto* owner = a_actor->AsActorValueOwner(); owner && actorValue != RE::ActorValue::kNone) {
+				value = owner->GetActorValue(actorValue);
+			}
+		}
+		if (!std::isfinite(value)) {
+			value = std::isfinite(a_fixedValue) ? a_fixedValue : 0.0F;
+		}
+		return std::max(0.0F, value);
 	}
 
 	[[nodiscard]] bool SpendSpellCostIfAvailable(RE::Actor* a_actor, RE::SpellItem* a_spell)
@@ -945,6 +1510,180 @@ namespace
 
 		owner->DamageActorValue(RE::ActorValue::kMagicka, cost);
 		return true;
+	}
+
+	[[nodiscard]] RE::Actor* ResolveRuleTarget(RE::Actor* a_eventActor, Settings::RuleTarget a_target)
+	{
+		if (!a_eventActor) {
+			return nullptr;
+		}
+
+		switch (a_target) {
+		case Settings::RuleTarget::kPlayer:
+			return RE::PlayerCharacter::GetSingleton();
+		case Settings::RuleTarget::kCombatTarget: {
+			auto target = a_eventActor->GetActorRuntimeData().currentCombatTarget.get();
+			return target ? target->As<RE::Actor>() : nullptr;
+		}
+		case Settings::RuleTarget::kEventActor:
+		default:
+			return a_eventActor;
+		}
+	}
+
+	[[nodiscard]] bool CompareActorValue(
+		float a_currentValue,
+		const Settings::RuleCondition& a_condition)
+	{
+		switch (a_condition.comparison) {
+		case Settings::ComparisonOperator::kGreater:
+			return a_currentValue > a_condition.value;
+		case Settings::ComparisonOperator::kLess:
+			return a_currentValue < a_condition.value;
+		case Settings::ComparisonOperator::kLessOrEqual:
+			return a_currentValue <= a_condition.value;
+		case Settings::ComparisonOperator::kEqual:
+			return std::abs(a_currentValue - a_condition.value) <= 0.001F;
+		case Settings::ComparisonOperator::kBetween: {
+			const auto minimum = std::min(a_condition.value, a_condition.maximumValue);
+			const auto maximum = std::max(a_condition.value, a_condition.maximumValue);
+			return a_currentValue >= minimum && a_currentValue <= maximum;
+		}
+		case Settings::ComparisonOperator::kGreaterOrEqual:
+		default:
+			return a_currentValue >= a_condition.value;
+		}
+	}
+
+	[[nodiscard]] bool MatchesCondition(RE::Actor* a_actor, const Settings::RuleCondition& a_condition)
+	{
+		if (!a_actor) {
+			return false;
+		}
+
+		bool matches = false;
+		switch (a_condition.type) {
+		case Settings::ConditionType::kRace: {
+			auto* race = RE::TESForm::LookupByID<RE::TESRace>(a_condition.formID);
+			if (!race) {
+				return false;
+			}
+			matches = a_actor->GetRace() == race;
+			break;
+		}
+		case Settings::ConditionType::kKeyword: {
+			auto* keyword = RE::TESForm::LookupByID<RE::BGSKeyword>(a_condition.formID);
+			if (!keyword) {
+				return false;
+			}
+			matches = a_actor->HasKeyword(keyword);
+			break;
+		}
+		case Settings::ConditionType::kFaction: {
+			auto* faction = RE::TESForm::LookupByID<RE::TESFaction>(a_condition.formID);
+			if (!faction) {
+				return false;
+			}
+			matches = a_actor->IsInFaction(faction);
+			break;
+		}
+		case Settings::ConditionType::kEquippedWeapon: {
+			auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(a_condition.formID);
+			if (!weapon) {
+				return false;
+			}
+			matches = a_actor->GetEquippedObject(false) == weapon || a_actor->GetEquippedObject(true) == weapon;
+			break;
+		}
+		case Settings::ConditionType::kActorValue: {
+			const auto actorValue = RE::ActorValueList::LookupActorValueByName(a_condition.actorValue.c_str());
+			const auto* owner = a_actor->AsActorValueOwner();
+			if (actorValue == RE::ActorValue::kNone || !owner) {
+				return false;
+			}
+			return CompareActorValue(owner->GetActorValue(actorValue), a_condition);
+		}
+		default:
+			return false;
+		}
+
+		return a_condition.negate ? !matches : matches;
+	}
+
+	[[nodiscard]] bool MatchesAllConditions(RE::Actor* a_actor, const Settings::Rule& a_rule)
+	{
+		return std::ranges::all_of(a_rule.conditions, [&](const Settings::RuleCondition& a_condition) {
+			return MatchesCondition(a_actor, a_condition);
+		});
+	}
+
+	[[nodiscard]] float GetRandomPercent()
+	{
+		static thread_local std::mt19937 generator{ std::random_device{}() };
+		static thread_local std::uniform_real_distribution<float> distribution(0.0F, 100.0F);
+		return distribution(generator);
+	}
+
+	[[nodiscard]] bool TryActivateRule(const Settings::Rule& a_rule, RE::Actor* a_target)
+	{
+		if (!a_target) {
+			return false;
+		}
+
+		const auto chance = std::clamp(ResolveExecutionValue(a_rule.chance, a_rule.chanceSource,
+			a_rule.chanceGlobal, a_rule.chanceActorValue, a_target), 0.0F, 100.0F);
+		const auto cooldown = ResolveExecutionValue(a_rule.cooldownSeconds, a_rule.cooldownSource,
+			a_rule.cooldownGlobal, a_rule.cooldownActorValue, a_target);
+		const auto maxActivations = static_cast<std::uint32_t>(std::min<double>(
+			ResolveExecutionValue(static_cast<float>(a_rule.maxActivations), a_rule.maxActivationsSource,
+				a_rule.maxActivationsGlobal, a_rule.maxActivationsActorValue, a_target),
+			std::numeric_limits<std::uint32_t>::max()));
+		const auto* calendar = RE::Calendar::GetSingleton();
+		if (!calendar) {
+			return false;
+		}
+
+		std::scoped_lock lock(g_runtimeMutex);
+		auto& state = g_ruleRuntime[a_rule.name];
+		return state.TryActivate(calendar->GetDaysPassed(), chance, cooldown, maxActivations,
+			a_rule.cooldownScope == Settings::CooldownScope::kGlobal, a_target->GetFormID(),
+			std::chrono::steady_clock::now(), chance > 0.0F && chance < 100.0F ? GetRandomPercent() : 0.0F);
+	}
+
+	[[nodiscard]] bool IsDuplicateEffect(const Settings::RuleEffect& a_lhs, const Settings::RuleEffect& a_rhs)
+	{
+		if (a_lhs.type != a_rhs.type) {
+			return false;
+		}
+
+		switch (a_lhs.type) {
+		case Settings::EffectType::kCastSpell:
+		case Settings::EffectType::kDispelSpell:
+		case Settings::EffectType::kAddPerk:
+		case Settings::EffectType::kRemovePerk:
+		case Settings::EffectType::kPlaySound:
+			return a_lhs.formID == a_rhs.formID;
+		case Settings::EffectType::kPlayShaderEffect:
+			return a_lhs.formID == a_rhs.formID && a_lhs.duration == a_rhs.duration;
+		case Settings::EffectType::kModifyResource:
+			if (a_lhs.resourceOperation != a_rhs.resourceOperation ||
+				a_lhs.resource != a_rhs.resource ||
+				a_lhs.valueSource != a_rhs.valueSource) {
+				return false;
+			}
+
+			switch (a_lhs.valueSource) {
+			case Settings::ValueSource::kGlobal:
+				return a_lhs.globalID == a_rhs.globalID;
+			case Settings::ValueSource::kActorValue:
+				return a_lhs.actorValue == a_rhs.actorValue;
+			case Settings::ValueSource::kFixed:
+			default:
+				return a_lhs.fixedValue == a_rhs.fixedValue;
+			}
+		default:
+			return false;
+		}
 	}
 
 	void ApplyEffect(RE::Actor* a_actor, const Settings::RuleEffect& a_effect)
@@ -1023,13 +1762,51 @@ namespace
 			break;
 		}
 	}
+
+	void ApplyResolvedEffects(RE::Actor* a_actor, const std::vector<Settings::RuleEffect>& a_requestedEffects)
+	{
+		std::unordered_set<RE::FormID> spellsToDispel;
+		std::unordered_set<RE::FormID> perksToRemove;
+		for (const auto& effect : a_requestedEffects) {
+			if (effect.type == Settings::EffectType::kDispelSpell) {
+				spellsToDispel.insert(effect.formID);
+			} else if (effect.type == Settings::EffectType::kRemovePerk) {
+				perksToRemove.insert(effect.formID);
+			}
+		}
+
+		std::vector<Settings::RuleEffect> resolvedEffects;
+		resolvedEffects.reserve(a_requestedEffects.size());
+		for (const auto& effect : a_requestedEffects) {
+			if ((effect.type == Settings::EffectType::kCastSpell && spellsToDispel.contains(effect.formID)) ||
+				(effect.type == Settings::EffectType::kAddPerk && perksToRemove.contains(effect.formID))) {
+				continue;
+			}
+
+			const auto duplicate = std::ranges::find_if(resolvedEffects, [&](const Settings::RuleEffect& a_existing) {
+				return IsDuplicateEffect(a_existing, effect);
+			});
+			if (duplicate == resolvedEffects.end()) {
+				resolvedEffects.push_back(effect);
+			} else if (effect.type == Settings::EffectType::kCastSpell) {
+				duplicate->requireSpellCost = duplicate->requireSpellCost && effect.requireSpellCost;
+			}
+		}
+
+		for (const auto& effect : resolvedEffects) {
+			ApplyEffect(a_actor, effect);
+		}
+	}
 }
 
 namespace Settings
 {
 	void LoadSettings()
 	{
-		std::unique_lock lock(RuleMutex);
+		std::scoped_lock runtimeLock(g_runtimeMutex);
+		g_ruleRuntime.clear();
+
+		std::unique_lock ruleLock(RuleMutex);
 		Rules.clear();
 
 		std::filesystem::create_directories(kRulesDir);
@@ -1082,21 +1859,46 @@ namespace Settings
 			}
 		}
 
+		struct TargetEffectBatch
+		{
+			RE::Actor* target{ nullptr };
+			std::vector<RuleEffect> effects;
+		};
+
+		std::vector<TargetEffectBatch> batches;
 		for (const auto& rule : matchingRules) {
-			if (a_actor->IsPlayerRef() && !rule.affectPlayer) {
+			auto* target = ResolveRuleTarget(a_actor, rule.target);
+			if (!target || target->IsDead() || !target->Is3DLoaded()) {
+				continue;
+			}
+
+			if (target->IsPlayerRef() && !rule.affectPlayer) {
 				continue;
 			}
 
 			if (rule.requiredPerk != 0) {
 				auto* perk = RE::TESForm::LookupByID<RE::BGSPerk>(rule.requiredPerk);
-				if (!perk || !a_actor->HasPerk(perk)) {
+				if (!perk || !target->HasPerk(perk)) {
 					continue;
 				}
 			}
 
-			for (const auto& effect : rule.effects) {
-				ApplyEffect(a_actor, effect);
+			if (!MatchesAllConditions(target, rule) || !TryActivateRule(rule, target)) {
+				continue;
 			}
+
+			auto batch = std::ranges::find_if(batches, [&](const TargetEffectBatch& a_batch) {
+				return a_batch.target == target;
+			});
+			if (batch == batches.end()) {
+				batches.push_back({ target, rule.effects });
+			} else {
+				batch->effects.insert(batch->effects.end(), rule.effects.begin(), rule.effects.end());
+			}
+		}
+
+		for (const auto& batch : batches) {
+			ApplyResolvedEffects(batch.target, batch.effects);
 		}
 	}
 

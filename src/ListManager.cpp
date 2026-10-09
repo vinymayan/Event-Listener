@@ -97,6 +97,22 @@ bool ListManager::PopulateAllLists(const bool forceRefresh) {
         return perk != nullptr;
     });
 
+    PopulateList<RE::TESRace>("Race", [](RE::TESRace* race) -> bool {
+        return race != nullptr;
+    });
+
+    PopulateList<RE::BGSKeyword>("Keyword", [](RE::BGSKeyword* keyword) -> bool {
+        return keyword != nullptr;
+    });
+
+    PopulateList<RE::TESFaction>("Faction", [](RE::TESFaction* faction) -> bool {
+        return faction != nullptr;
+    });
+
+    PopulateList<RE::TESObjectWEAP>("Weapon", [](RE::TESObjectWEAP* weapon) -> bool {
+        return weapon != nullptr;
+    });
+
     PopulateList<RE::TESGlobal>("Global", [](RE::TESGlobal* global) -> bool {
         return global != nullptr;
     });
